@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Multi-User</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Bienvenue dans votre espace personnel</h1>
+</header>
+
+<main>
+  <section class="file-list">
+    <h2>Vos fichiers</h2>
+    <ul id="fileList">
+      <li>Chargement...</li>
+    </ul>
+  </section>
+
+  <section class="file-upload">
+    <h2>Uploader un fichier</h2>
+    <input type="file" id="uploadInput">
+    <button onclick="uploadFile()">Téléverser</button>
+  </section>
+
+  <section class="actions">
+    <h2>Actions</h2>
+    <button onclick="compress()">Compresser mes fichiers</button>
+  </section>
+
+  <div id="notifications">
+    <strong>Notifications :</strong>
+    <ul id="notifList"></ul>
+  </div>
+</main>
+</body>
+<script src="app.js"></script>
+</html>
