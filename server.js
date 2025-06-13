@@ -3,19 +3,59 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 const { authenticate, getUserIdFromToken } = require('./auth');
+const token = localStorage.getItem('token');
+const { spawn, exec } = require('child_process');
+
+const ownFileList = document.getElementById('ownFileList');
+const sharedFileList = document.getElementById('sharedFileList');
 
 const usersPath = path.join(__dirname, 'users.json');
 const sharesPath = path.join(__dirname, 'data', 'share.json');
 
-function loadShares() {
-    if (!fs.existsSync(sharesPath)) return {};
-    return JSON.parse(fs.readFileSync(sharesPath, 'utf-8'));
+async function loadFiles() {
+    const res = await fetch('http://localhost:3000/files', {
+        headers: { 'Authorization': token }
+    });
+
+    if (res.ok) {
+        const files = await res.json();
+        fileList.innerHTML = '';
+        files.forEach(f => {
+            const li = document.createElement('li');
+            li.textContent = f;
+            fileList.appendChild(li);
+        });
+    } else {
+        fileList.innerHTML = '<li>Erreur de chargement</li>';
+    }
 }
+
 
 function saveShares(shares) {
     fs.writeFileSync(sharesPath, JSON.stringify(shares, null, 2));
 }
 
+function getSharedFilesForUser(userId) {
+    const shareFilePath = path.join(__dirname, 'data', 'share.json');
+    if (!fs.existsSync(shareFilePath)) return [];
+
+    const shares = JSON.parse(fs.readFileSync(shareFilePath, 'utf-8'));
+    const ownersWhoSharedWithMe = Object.entries(shares)
+        .filter(([owner, sharedWith]) => sharedWith.includes(userId))
+        .map(([owner]) => owner);
+
+    const sharedFiles = [];
+
+    ownersWhoSharedWithMe.forEach(owner => {
+        const ownerDir = path.join(__dirname, 'data', owner);
+        if (fs.existsSync(ownerDir)) {
+            const files = fs.readdirSync(ownerDir).map(f => `[Partagé par ${owner}] ${f}`);
+            sharedFiles.push(...files);
+        }
+    });
+
+    return sharedFiles;
+}
 
 
 const server = http.createServer((req, res) => {
@@ -68,15 +108,125 @@ const server = http.createServer((req, res) => {
         const userDir = path.join(__dirname, 'data', userId);
         if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
 
-        fs.readdir(userDir, (err, files) => {
+        // Lire le fichier share.json
+        const shareFilePath = path.join(__dirname, 'data', 'share.json');
+        let shares = {};
+        if (fs.existsSync(shareFilePath)) {
+            const content = fs.readFileSync(shareFilePath, 'utf8');
+            shares = content ? JSON.parse(content) : {};
+        }
+
+        const sharedFromUsers = shares[userId] || [];
+
+        let sharedFiles = [];
+        sharedFromUsers.forEach(ownerId => {
+            const ownerDir = path.join(__dirname, 'data', ownerId);
+            if (fs.existsSync(ownerDir)) {
+                const ownerFiles = fs.readdirSync(ownerDir).map(f => `[Partagé par ${ownerId}] ${f}`);
+                sharedFiles = sharedFiles.concat(ownerFiles);
+            }
+        });
+
+
+        fs.readdir(userDir, (err, ownFiles) => {
             if (err) {
                 res.writeHead(500);
                 return res.end('Erreur lecture');
             }
+            const allFiles = [...ownFiles, ...sharedFiles];
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(files));
+            res.end(JSON.stringify(allFiles));
         });
     }
+
+
+    else if (req.method === 'GET' && req.url.startsWith('/file?name=')) {
+        const userId = extractUserId(req);
+        if (!userId) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        const urlParams = new URLSearchParams(req.url.replace('/file?', ''));
+        const fileName = urlParams.get('name');
+        const sharedBy = urlParams.get('sharedBy'); // facultatif
+
+        let filePath;
+        if (sharedBy) {
+            filePath = path.join(__dirname, 'data', sharedBy, fileName);
+        } else {
+            filePath = path.join(__dirname, 'data', userId, fileName);
+        }
+
+        if (!fs.existsSync(filePath)) {
+            res.writeHead(404);
+            return res.end('Fichier introuvable');
+        }
+
+        res.writeHead(200, {
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': `attachment; filename="${fileName}"`
+        });
+
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+    }
+
+    else if (req.method === 'POST' && req.url === '/compress') {
+        const userId = extractUserId(req);
+        if (!userId) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        const inputDir = path.join(__dirname, 'data', userId);
+        const outputZip = path.join(__dirname, 'data', `${userId}.zip`);
+
+        if (!fs.existsSync(inputDir)) {
+            res.writeHead(404);
+            return res.end('Dossier utilisateur introuvable');
+        }
+
+        // Compression avec spawn (zip -r)
+        const zip = spawn('zip', ['-r', outputZip, '.', '-i', '*'], { cwd: inputDir });
+
+        zip.on('close', code => {
+            if (code === 0) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ message: 'Compression réussie', zip: `${userId}.zip` }));
+            } else {
+                res.writeHead(500);
+                res.end(`Erreur de compression (code ${code})`);
+            }
+        });
+
+        zip.on('error', err => {
+            res.writeHead(500);
+            res.end('Erreur système : ' + err.message);
+        });
+    }
+    else if (req.method === 'GET' && req.url.startsWith('/analyze')) {
+        const userId = extractUserId(req);
+        if (!userId) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        const dirPath = path.join(__dirname, 'data', userId);
+
+        exec(`ls -lh "${dirPath}"`, (err, stdout, stderr) => {
+            if (err) {
+                res.writeHead(500);
+                return res.end('Erreur système : ' + stderr);
+            }
+
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end(stdout);
+        });
+    }
+
+
+
     else if (req.method === 'POST' && req.url === '/share') {
         const userId = extractUserId(req);
         console.log('POST /share reçu de', userId);
@@ -170,42 +320,6 @@ const server = http.createServer((req, res) => {
             res.writeHead(200);
             res.end('Upload terminé');
         });
-    }
-    else if (req.method === 'GET' && req.url === '/files') {
-        const userId = extractUserId(req);
-        if (!userId) {
-            res.writeHead(401);
-            return res.end('Unauthorized');
-        }
-
-        const userDir = path.join(__dirname, 'data', userId);
-        if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
-
-        const sharedFiles = [];
-        const shares = loadShares();
-        const sharedFrom = shares.filter(s => s.sharedWith === userId);
-
-        sharedFrom.forEach(share => {
-            const sharedDir = path.join(__dirname, 'data', share.owner);
-            if (fs.existsSync(sharedDir)) {
-                const files = fs.readdirSync(sharedDir).map(f => `[Partagé par ${share.owner}] ${f}`);
-                sharedFiles.push(...files);
-            }
-        });
-
-        fs.readdir(userDir, (err, ownFiles) => {
-            if (err) {
-                res.writeHead(500);
-                return res.end('Erreur lecture');
-            }
-            const allFiles = [...ownFiles, ...sharedFiles];
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(allFiles));
-        });
-    }
-    else {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Bienvenue dans le gestionnaire de fichiers !');
     }
 });
 
