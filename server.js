@@ -4,46 +4,153 @@ const path = require('path');
 const WebSocket = require('ws');
 const { authenticate, getUserIdFromToken } = require('./auth');
 
-// Créer un serveur HTTP de base
 const server = http.createServer((req, res) => {
+    // CORS - autoriser toutes origines (à adapter en prod)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    // Réponse rapide aux prévol OPTIONS CORS
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        return res.end();
+    }
+
+    // Fonction pour extraire userId à partir du token Authorization
+    function extractUserId(req) {
+        const token = req.headers['authorization'];
+        if (!token) return null;
+        return getUserIdFromToken(token);
+    }
+
+    // Gestion des routes
     if (req.method === 'POST' && req.url === '/login') {
         let body = '';
-        req.on('data', chunk => (body += chunk));
+        req.on('data', chunk => body += chunk);
         req.on('end', () => {
-            const { username, password } = JSON.parse(body);
-            const token = authenticate(username, password);
-            if (token) {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ token }));
-            } else {
-                res.writeHead(401);
-                res.end('Unauthorized');
+            try {
+                const { username, password } = JSON.parse(body);
+                const token = authenticate(username, password);
+                if (token) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ token }));
+                } else {
+                    res.writeHead(401);
+                    res.end('Unauthorized');
+                }
+            } catch {
+                res.writeHead(400);
+                res.end('Bad Request');
             }
         });
-    } else {
+    }
+    else if (req.method === 'GET' && req.url === '/files') {
+        const userId = extractUserId(req);
+        if (!userId) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        const userDir = path.join(__dirname, 'data', userId);
+        if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
+
+        fs.readdir(userDir, (err, files) => {
+            if (err) {
+                res.writeHead(500);
+                return res.end('Erreur lecture');
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(files));
+        });
+    }
+    else if (req.method === 'POST' && req.url === '/upload') {
+        const userId = extractUserId(req);
+        if (!userId) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        // Gérer upload multipart/form-data (exemple basique)
+        const contentType = req.headers['content-type'] || '';
+        const boundaryMatch = contentType.match(/boundary=(.+)$/);
+        if (!boundaryMatch) {
+            res.writeHead(400);
+            return res.end('Bad Request: boundary not found');
+        }
+
+        const boundary = '--' + boundaryMatch[1];
+        let rawData = Buffer.alloc(0);
+
+        req.on('data', chunk => {
+            rawData = Buffer.concat([rawData, chunk]);
+        });
+
+        req.on('end', () => {
+            const parts = rawData.toString().split(boundary).filter(p => p.includes('filename='));
+            parts.forEach(part => {
+                const [rawHeaders, rawBody] = part.split('\r\n\r\n');
+                if (!rawHeaders || !rawBody) return;
+
+                const disposition = rawHeaders.match(/filename="(.+?)"/);
+                if (!disposition) return;
+
+                const filename = disposition[1];
+                const bodyClean = rawBody.trimEnd().slice(0, -2); // enlever le \r\n final
+
+                const userDir = path.join(__dirname, 'data', userId);
+                if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
+
+                const filePath = path.join(userDir, filename);
+                fs.writeFileSync(filePath, bodyClean, 'binary');
+            });
+
+            res.writeHead(200);
+            res.end('Upload terminé');
+        });
+    }
+    else if (req.method === 'DELETE' && req.url.startsWith('/files/')) {
+        const userId = extractUserId(req);
+        if (!userId) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        const filename = decodeURIComponent(req.url.split('/files/')[1]);
+        const filePath = path.join(__dirname, 'data', userId, filename);
+
+        fs.unlink(filePath, err => {
+            if (err) {
+                res.writeHead(404);
+                res.end('Fichier introuvable');
+            } else {
+                res.writeHead(200);
+                res.end('Fichier supprimé');
+            }
+        });
+    }
+    else {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Bienvenue dans le gestionnaire de fichiers !');
     }
 });
 
-// Créer un serveur WebSocket
+// Serveur WebSocket (même port)
 const wss = new WebSocket.Server({ server });
 
-// Lorsqu'une connexion WebSocket est établie
-wss.on('connection', (ws) => {
+wss.on('connection', ws => {
     console.log('Un utilisateur s\'est connecté');
-
-    // Message de bienvenue à la connexion
     ws.send('Connecté à WebSocket. Veuillez envoyer votre token pour vous authentifier.');
 
-    // Quand on reçoit un message depuis un client WebSocket
-    ws.on('message', (message) => {
-        console.log(`Message reçu : ${message}`);
+    ws.on('message', message => {
+        let data;
+        try {
+            data = JSON.parse(message);
+        } catch {
+            ws.send(JSON.stringify({ status: 'error', message: 'JSON invalide' }));
+            return;
+        }
 
-        const { token } = JSON.parse(message);
-
-        // Vérifier le token d'authentification
-        const userId = getUserIdFromToken(token);
+        const userId = getUserIdFromToken(data.token);
 
         if (userId) {
             ws.send(JSON.stringify({ status: 'success', message: 'Authentification réussie' }));
@@ -53,18 +160,15 @@ wss.on('connection', (ws) => {
         }
     });
 
-    // Gérer la déconnexion de l'utilisateur
     ws.on('close', () => {
         console.log('Un utilisateur s\'est déconnecté');
     });
 
-    // Gestion des erreurs
-    ws.on('error', (error) => {
+    ws.on('error', error => {
         console.error('Erreur WebSocket:', error);
     });
 });
 
-// Démarrer le serveur HTTP + WebSocket sur le même port
 server.listen(3000, () => {
     console.log('Serveur démarré sur http://localhost:3000');
 });
