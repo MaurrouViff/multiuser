@@ -4,6 +4,20 @@ const path = require('path');
 const WebSocket = require('ws');
 const { authenticate, getUserIdFromToken } = require('./auth');
 
+const usersPath = path.join(__dirname, 'users.json');
+const sharesPath = path.join(__dirname, 'data', 'share.json');
+
+function loadShares() {
+    if (!fs.existsSync(sharesPath)) return {};
+    return JSON.parse(fs.readFileSync(sharesPath, 'utf-8'));
+}
+
+function saveShares(shares) {
+    fs.writeFileSync(sharesPath, JSON.stringify(shares, null, 2));
+}
+
+
+
 const server = http.createServer((req, res) => {
     // CORS - autoriser toutes origines (à adapter en prod)
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -63,6 +77,55 @@ const server = http.createServer((req, res) => {
             res.end(JSON.stringify(files));
         });
     }
+    else if (req.method === 'POST' && req.url === '/share') {
+        const userId = extractUserId(req);
+        console.log('POST /share reçu de', userId);
+
+        if (!userId) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const { shareWithUserId } = JSON.parse(body);
+
+                if (!shareWithUserId) {
+                    res.writeHead(400);
+                    return res.end('ID utilisateur manquant');
+                }
+
+                const dataDir = path.join(__dirname, 'data');
+                if (!fs.existsSync(dataDir)) {
+                    fs.mkdirSync(dataDir);
+                }
+
+                let shares = loadShares();
+
+                if (!shares[userId]) {
+                    shares[userId] = [];
+                }
+
+                if (!shares[userId].includes(shareWithUserId)) {
+                    shares[userId].push(shareWithUserId);
+                }
+
+                saveShares(shares);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ message: `Dossier partagé avec ${shareWithUserId}` }));
+            } catch (err) {
+                console.error('Erreur dans /share:', err);
+                res.writeHead(400);
+                res.end('Mauvais format JSON');
+            }
+        });
+    }
+
+
+
     else if (req.method === 'POST' && req.url === '/upload') {
         const userId = extractUserId(req);
         if (!userId) {
@@ -108,24 +171,36 @@ const server = http.createServer((req, res) => {
             res.end('Upload terminé');
         });
     }
-    else if (req.method === 'DELETE' && req.url.startsWith('/files/')) {
+    else if (req.method === 'GET' && req.url === '/files') {
         const userId = extractUserId(req);
         if (!userId) {
             res.writeHead(401);
             return res.end('Unauthorized');
         }
 
-        const filename = decodeURIComponent(req.url.split('/files/')[1]);
-        const filePath = path.join(__dirname, 'data', userId, filename);
+        const userDir = path.join(__dirname, 'data', userId);
+        if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
 
-        fs.unlink(filePath, err => {
-            if (err) {
-                res.writeHead(404);
-                res.end('Fichier introuvable');
-            } else {
-                res.writeHead(200);
-                res.end('Fichier supprimé');
+        const sharedFiles = [];
+        const shares = loadShares();
+        const sharedFrom = shares.filter(s => s.sharedWith === userId);
+
+        sharedFrom.forEach(share => {
+            const sharedDir = path.join(__dirname, 'data', share.owner);
+            if (fs.existsSync(sharedDir)) {
+                const files = fs.readdirSync(sharedDir).map(f => `[Partagé par ${share.owner}] ${f}`);
+                sharedFiles.push(...files);
             }
+        });
+
+        fs.readdir(userDir, (err, ownFiles) => {
+            if (err) {
+                res.writeHead(500);
+                return res.end('Erreur lecture');
+            }
+            const allFiles = [...ownFiles, ...sharedFiles];
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(allFiles));
         });
     }
     else {

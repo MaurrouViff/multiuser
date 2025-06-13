@@ -61,25 +61,33 @@ async function compress() {
 }
 
 function connectWebSocket() {
-    const socket = new WebSocket('ws://localhost:8081');
+    window.socket = new WebSocket('ws://localhost:3000');
 
-    socket.onopen = () => {
-        socket.send(JSON.stringify({ token }));
+    window.socket.onopen = () => {
+        window.socket.send(JSON.stringify({ token }));
     };
 
-    socket.onmessage = event => {
-        const data = JSON.parse(event.data);
+    window.socket.onmessage = event => {
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch {
+            // Si ce n'est pas un JSON, on crée un objet avec message texte brut
+            data = { message: event.data };
+        }
+
         const li = document.createElement('li');
         li.textContent = data.message || 'Notification reçue';
         notifList.appendChild(li);
     };
 
-    socket.onerror = () => {
+    window.socket.onerror = () => {
         const li = document.createElement('li');
         li.textContent = 'Erreur WebSocket';
         notifList.appendChild(li);
     };
 }
+
 
 // Initialisation
 loadFiles();

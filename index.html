@@ -32,6 +32,16 @@
     <button onclick="compress()">Compresser mes fichiers</button>
   </section>
 
+  <h2>Partager mon dossier</h2>
+  <form id="share-form">
+    <label for="shareWithUserId">Partage</label>
+    <input type="text" id="shareWithUserId" placeholder="ID utilisateur à partager" required>
+    <button type="submit">Partager</button>
+  </form>
+
+  <div id="share-result"></div>
+
+
   <div id="notifications">
     <strong>Notifications :</strong>
     <ul id="notifList"></ul>
@@ -39,4 +49,5 @@
 </main>
 </body>
 <script src="app.js"></script>
+<script src="share.js"></script>
 </html>
